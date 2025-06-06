@@ -35,7 +35,7 @@ fi
 if [ ! -d slang-repo ]
 then
 	echo "[$(date)] Cloning slang repository into slang-repo..."
-	git clone https://github.com/shader-slang/slang.git slang-repo
+	git clone https://github.com/kaizhangNV/slang.git slang-repo
 	if [ $? -ne 0 ]
 	then
 		echo "Error: Failed to clone slang repository"
@@ -46,6 +46,7 @@ fi
 
 pushd slang-repo
 git submodule update --init --recursive
+git checkout fix_json_reflection
 
 # The `,` syntax in sed specifies a range from the line that starts
 # with `target_link_options(` to the line that has just a `)` (possibly indented).

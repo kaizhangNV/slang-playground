@@ -22,7 +22,7 @@ jobs:
 
       - name: get slang head commit
         run: |
-          git clone https://github.com/shader-slang/slang.git slang-repo
+          git clone https://github.com/kaizhangNV/slang.git slang-repo
           git -C slang-repo rev-parse HEAD > key.txt
 
       - name: get spirv-tool head commit
