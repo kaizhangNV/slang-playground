@@ -62,9 +62,9 @@ RWTexture2D<uint> jfaPacked;
 [playground::BLACK_SCREEN(1.0, 1.0)]
 RWTexture2D<float> distanceTex;
 
-[format("r32f")]
-[playground::BLACK_SCREEN(0.25, 0.25)]
-RWTexture2D<float> radianceTex;
+[format("r32ui")]
+[playground::BLACK_SCREEN(0.5, 0.5)]
+RWTexture2D<uint> radianceTex;
 
 [playground::ZEROS(4)]
 RWStructuredBuffer<float> lastMouse;
@@ -79,7 +79,7 @@ uniform float4 mousePosition;
 [playground::SLIDER(4.0, 2.0, 16.0)]
 uniform float basePixelsBetweenProbes;
 
-[playground::SLIDER(8.0, 4.0, 32.0)]
+[playground::SLIDER(32.0, 4.0, 64.0)]
 uniform float rayCount;
 
 float sdfLineSquared(float2 p, float2 from, float2 to)
@@ -161,7 +161,6 @@ void jfaStepSeedToJfa(uint2 tid, uint2 dims, uint offset)
     for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++)
         {
-            if (dx == 0 && dy == 0) continue;
             int2 s = int2(tid) + int2(dx, dy) * int(offset);
             if (s.x < 0 || s.x >= int(dims.x) || s.y < 0 || s.y >= int(dims.y)) continue;
             float2 seed = unpackSeed(seedPacked.Load(s));
@@ -170,7 +169,7 @@ void jfaStepSeedToJfa(uint2 tid, uint2 dims, uint offset)
             if (d < nearestDist) { nearestDist = d; nearestSeed = seed; }
         }
     if (nearestDist < 1e5) jfaPacked[tid] = packSeed(nearestSeed.x, nearestSeed.y);
-    else jfaPacked[tid] = seedPacked.Load(int2(tid));
+    else jfaPacked[tid] = NO_SEED_PACKED;
 }
 
 void jfaStepJfaToSeed(uint2 tid, uint2 dims, uint offset)
@@ -181,7 +180,6 @@ void jfaStepJfaToSeed(uint2 tid, uint2 dims, uint offset)
     for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++)
         {
-            if (dx == 0 && dy == 0) continue;
             int2 s = int2(tid) + int2(dx, dy) * int(offset);
             if (s.x < 0 || s.x >= int(dims.x) || s.y < 0 || s.y >= int(dims.y)) continue;
             float2 seed = unpackSeed(jfaPacked.Load(s));
@@ -190,7 +188,7 @@ void jfaStepJfaToSeed(uint2 tid, uint2 dims, uint offset)
             if (d < nearestDist) { nearestDist = d; nearestSeed = seed; }
         }
     if (nearestDist < 1e5) seedPacked[tid] = packSeed(nearestSeed.x, nearestSeed.y);
-    else seedPacked[tid] = jfaPacked.Load(int2(tid));
+    else seedPacked[tid] = NO_SEED_PACKED;
 }
 
 [shader("compute")]
@@ -239,6 +237,27 @@ void distancePass(uint2 tid: SV_DispatchThreadID)
     distanceTex[tid] = d;
 }
 
+float probeHash(uint2 id)
+{
+    return frac(sin(dot(float2(id), float2(12.9898, 78.233))) * 43758.5453);
+}
+
+uint packR11G11B10(float3 c)
+{
+    uint r = uint(clamp(c.r, 0.0, 1.0) * 2047.0 + 0.5);
+    uint g = uint(clamp(c.g, 0.0, 1.0) * 2047.0 + 0.5);
+    uint b = uint(clamp(c.b, 0.0, 1.0) * 1023.0 + 0.5);
+    return r | (g << 11) | (b << 22);
+}
+
+float3 unpackR11G11B10(uint packed)
+{
+    float r = float(packed & 2047u) / 2047.0;
+    float g = float((packed >> 11) & 2047u) / 2047.0;
+    float b = float((packed >> 22) & 1023u) / 1023.0;
+    return float3(r, g, b);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 [playground::CALL::SIZE_OF("radianceTex")]
@@ -247,46 +266,48 @@ void rcPass(uint2 tid: SV_DispatchThreadID)
     uint2 radDims, sceneDims;
     radianceTex.GetDimensions(radDims.x, radDims.y);
     sceneWrite.GetDimensions(sceneDims.x, sceneDims.y);
-    float2 resolution = float2(sceneDims.x, sceneDims.y);
-    float scale = min(resolution.x, resolution.y);
-    float2 oneOverSize = 1.0 / resolution;
-    float minStep = min(oneOverSize.x, oneOverSize.y) * 0.5;
+    float2 resolution = float2(sceneDims);
+    float shortSide = min(resolution.x, resolution.y);
+    float2 scaleVec = shortSide / resolution;
+    float2 oneOverRes = 1.0 / resolution;
+    float minHit = min(oneOverRes.x, oneOverRes.y) * 4.0;
 
-    float2 probeCenter = (float2(tid) + 0.5) * basePixelsBetweenProbes;
-    float angleStep = TAU / rayCount;
-    float totalLum = 0.0;
-    uint hits = 0;
+    float2 probeSpacing = resolution / float2(radDims);
+    float2 probeUV = (float2(tid) + 0.5) * probeSpacing * oneOverRes;
+
+    float aStep = TAU / rayCount;
+    float aOff = probeHash(tid) * aStep;
+    float3 totalColor = float3(0.0);
 
     for (uint i = 0; i < uint(rayCount); i++)
     {
-        float angle = (float(i) + 0.5) * angleStep;
-        float2 rayDir = float2(cos(angle), -sin(angle));
-        float2 rayStart = probeCenter + rayDir * 4.0;
-        float rayLength = scale * 0.6;
-        float2 rayUv = rayStart * oneOverSize;
+        float angle = (float(i) + 0.5) * aStep + aOff;
+        float2 rd = float2(cos(angle), -sin(angle));
+        float2 uv = probeUV;
+        float t = 0.0;
 
-        for (float dist = 0.0; dist < rayLength; )
+        for (int s = 0; s < 64; s++)
         {
-            if (rayUv.x < 0.0 || rayUv.x > 1.0 || rayUv.y < 0.0 || rayUv.y > 1.0) break;
-            int2 tc = int2(rayUv * resolution);
-            tc = clamp(tc, int2(0, 0), int2(sceneDims.x - 1, sceneDims.y - 1));
+            if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+            int2 tc = clamp(int2(uv * resolution), int2(0), int2(sceneDims - 1));
             float df = distanceTex.Load(tc);
-            if (df <= minStep)
+            if (df <= minHit)
             {
-                float4 c = unpackRGBA(sceneWrite.Load(tc));
-                float lum = dot(c.rgb, float3(0.299, 0.587, 0.114)) * c.a;
-                totalLum += lum;
-                hits++;
+                float2 sUV = unpackSeed(seedPacked.Load(tc));
+                int2 sTC = clamp(int2(sUV * resolution), int2(0), int2(sceneDims - 1));
+                float4 c = unpackRGBA(sceneWrite.Load(sTC));
+                totalColor += c.rgb * c.a;
                 break;
             }
-            float stepSize = df * scale * 0.5;
-            dist += stepSize;
-            rayUv += rayDir * (stepSize * oneOverSize);
+            float sd = max(df, min(oneOverRes.x, oneOverRes.y) * 2.0);
+            t += sd;
+            if (t >= sqrt(2.0)) break;
+            uv += rd * sd * scaleVec;
         }
     }
 
-    float lum = (hits > 0u) ? (totalLum / float(hits)) : 0.0;
-    radianceTex[tid] = lum;
+    float3 avg = totalColor / rayCount;
+    radianceTex[tid] = packR11G11B10(avg);
 }
 
 [shader("compute")]
@@ -298,12 +319,23 @@ void overlay(uint2 tid: SV_DispatchThreadID)
     sceneWrite.GetDimensions(sceneDims.x, sceneDims.y);
     radianceTex.GetDimensions(radDims.x, radDims.y);
     float4 c = unpackRGBA(sceneWrite.Load(int2(tid)));
-    float2 radUV = (float2(tid) + 0.5) * float2(radDims.x, radDims.y) / float2(sceneDims.x, sceneDims.y);
-    int2 rp = int2(radUV);
-    rp = clamp(rp, int2(0, 0), int2(radDims.x - 1, radDims.y - 1));
-    float rad = radianceTex.Load(rp);
+
+    float2 radCoord = (float2(tid) + 0.5) / float2(sceneDims) * float2(radDims) - 0.5;
+    float3 rad = float3(0.0);
+    float wt = 0.0;
+    for (int dy = -3; dy <= 3; dy++)
+        for (int dx = -3; dx <= 3; dx++)
+        {
+            int2 r = clamp(int2(floor(radCoord)) + int2(dx, dy), int2(0), int2(radDims - 1));
+            float w = exp(-0.5 * float(dx * dx + dy * dy) / 5.0);
+            float3 s = unpackR11G11B10(radianceTex.Load(r));
+            rad += s * w;
+            wt += w;
+        }
+    rad /= wt;
+
     float3 dark = float3(0.08, 0.06, 0.12);
-    float3 radColor = dark + float3(rad, rad, rad);
+    float3 radColor = dark + rad * 0.8;
     float3 final = (c.a > 0.01) ? c.rgb : radColor;
     drawPixel(tid, (int2 _) => float4(final, 1.0));
 }

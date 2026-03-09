@@ -215,8 +215,8 @@ function handleResize() {
 
     for (const { resourceName, parsedCommand } of compiledCode.resourceCommands) {
         if (parsedCommand.type === "BLACK_SCREEN") {
-            const width = parsedCommand.width_scale * currentWindowSize[0];
-            const height = parsedCommand.height_scale * currentWindowSize[1];
+            const width = Math.max(1, Math.floor(parsedCommand.width_scale * currentWindowSize[0]));
+            const height = Math.max(1, Math.floor(parsedCommand.height_scale * currentWindowSize[1]));
             const size = width * height;
 
             const bindingInfo = compiledCode.layout[resourceName];
@@ -244,7 +244,8 @@ function handleResize() {
                     usage: usage,
                 });
 
-                let zeros = new Uint8Array(Array(size * elementSize).fill(0));
+                const zeroBytes = size * elementSize;
+                let zeros = new Uint8Array(zeroBytes);
                 device.queue.writeTexture({ texture }, zeros, { bytesPerRow: width * elementSize }, { width, height });
 
                 // Initialize the texture with zeros.
@@ -691,8 +692,8 @@ async function processResourceCommands(
 
                 safeSet(allocatedResources, resourceName, texture);
 
-                // Initialize the texture with zeros.
-                let zeros = new Uint8Array(Array(size * elementSize).fill(0));
+                const zeroBytes = size * elementSize;
+                let zeros = new Uint8Array(zeroBytes);
                 device.queue.writeTexture({ texture }, zeros, { bytesPerRow: parsedCommand.width * elementSize }, { width: parsedCommand.width, height: parsedCommand.height });
             }
             catch (error) {
@@ -729,7 +730,8 @@ async function processResourceCommands(
                 safeSet(allocatedResources, resourceName, texture);
 
                 const bytesPerRow = parsedCommand.width * elementSize;
-                let zeros = new Uint8Array(Array(size * elementSize).fill(0));
+                const zeroBytes = size * elementSize;
+                let zeros = new Uint8Array(zeroBytes);
                 device.queue.writeTexture(
                     { texture },
                     zeros,
@@ -741,8 +743,8 @@ async function processResourceCommands(
                 throw new Error(`Failed to create texture: ${error}`);
             }
         } else if (parsedCommand.type === "BLACK_SCREEN") {
-            const width = parsedCommand.width_scale * currentWindowSize[0];
-            const height = parsedCommand.height_scale * currentWindowSize[1];
+            const width = Math.max(1, Math.floor(parsedCommand.width_scale * currentWindowSize[0]));
+            const height = Math.max(1, Math.floor(parsedCommand.height_scale * currentWindowSize[1]));
             const size = width * height;
 
             const format = bindingInfo.storageTexture?.format;
@@ -767,8 +769,8 @@ async function processResourceCommands(
 
                 safeSet(allocatedResources, resourceName, texture);
 
-                // Initialize the texture with zeros.
-                let zeros = new Uint8Array(Array(size * elementSize).fill(0));
+                const zeroBytes = size * elementSize;
+                let zeros = new Uint8Array(zeroBytes);
                 device.queue.writeTexture({ texture }, zeros, { bytesPerRow: width * elementSize }, { width, height });
                 device.queue.submit([]);
             }
