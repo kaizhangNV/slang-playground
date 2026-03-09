@@ -124,7 +124,14 @@ async function tryGetDevice() {
     ];
     const requiredFeatures: GPUFeatureName[] = allowedFeatures.filter(f => adapter.features.has(f));
 
-    let device = await adapter.requestDevice({ requiredFeatures });
+    // Radiance draw demo needs more than the default 4 storage textures per stage
+    let device = await adapter.requestDevice({
+        requiredFeatures,
+        requiredLimits: { maxStorageTexturesPerShaderStage: 8 },
+    });
+    if (!device) {
+        device = await adapter.requestDevice({ requiredFeatures });
+    }
     if (!device) {
         console.log('need a browser that supports WebGPU');
         return null;
